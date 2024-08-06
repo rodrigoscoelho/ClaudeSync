@@ -186,7 +186,16 @@ def get_local_files(local_path):
     gitignore = load_gitignore(local_path)
     claudeignore = load_claudeignore(local_path)
     files = {}
-    exclude_dirs = {".git", ".svn", ".hg", ".bzr", "_darcs", "CVS", "claude_chats"}
+    exclude_dirs = {
+        ".git",
+        ".svn",
+        ".hg",
+        ".bzr",
+        "_darcs",
+        "CVS",
+        "claude_chats",
+        ".claudesync",
+    }
 
     for root, dirs, filenames in os.walk(local_path, topdown=True):
         rel_root = os.path.relpath(root, local_path)
