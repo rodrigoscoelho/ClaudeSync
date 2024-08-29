@@ -70,6 +70,10 @@ Love ClaudeSync? Here's how you can contribute:
 
 Your support fuels ClaudeSync's growth and improvement!
 
+## 🔒 Security
+
+We take security seriously. If you discover a security vulnerability within ClaudeSync, please DM @jahwag privately on Discord. We appreciate your efforts to responsibly disclose your findings.
+
 ---
 
 [Contributors](https://github.com/jahwag/claudesync/graphs/contributors) • [License](https://github.com/jahwag/claudesync/blob/master/LICENSE) • [Report Bug](https://github.com/jahwag/claudesync/issues) • [Request Feature](https://github.com/jahwag/ClaudeSync/issues/new?assignees=&labels=enhancement&projects=&template=feature_request.md&title=)
