@@ -174,3 +174,6 @@ some_value
 
 ROADMAP.md
 .claudesync/config.local.json
+claude_openai_api.service
+start_claude_openai_api.sh
+.gitignore
