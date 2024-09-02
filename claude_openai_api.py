@@ -2,10 +2,12 @@ import os
 import sys
 import json
 import logging
+import argparse
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.exceptions import BadRequest, UnsupportedMediaType
 from datetime import datetime
+import ssl
 
 # Add the src directory to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +38,12 @@ except Exception as e:
     logger.error(f"Failed to initialize ClaudeAIProvider: {str(e)}")
     claude_provider = None
 
+def create_new_chat(organization_id, project_id):
+    chat_name = f"#claudesync - {datetime.now().strftime('%H:%M:%S')}"
+    chat = claude_provider.create_chat(organization_id, project_uuid=project_id, chat_name=chat_name)
+    logger.info(f"Created new chat with ID: {chat['uuid']} and name: {chat_name}")
+    return chat['uuid']
+
 @app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
 def chat_completions():
     logger.info(f"Received request: {request.method} {request.url}")
@@ -64,6 +72,7 @@ def chat_completions():
         # Extract relevant information from the OpenAI-style request
         messages = data.get('messages', [])
         max_tokens = data.get('max_tokens', 1000)  # Default to 1000 if not specified
+        model = data.get('model', 'claude-3.5-sonnet')  # Default to claude-3.5-sonnet if not specified
 
         # Convert OpenAI-style messages to Claude.ai format
         claude_messages = []
@@ -90,9 +99,14 @@ def chat_completions():
             logger.error("No active organization set")
             return jsonify({'error': 'No active organization set'}), 400
 
-        # Create a new chat or use an existing one
-        chat = claude_provider.create_chat(organization_id, project_uuid=project_id)
-        chat_id = chat['uuid']
+        # Check if a chat ID is provided in the header
+        chat_id = request.headers.get('X-Claude-Chat-Id')
+        
+        if chat_id:
+            logger.info(f"Using existing chat with ID: {chat_id}")
+        else:
+            # Create a new chat with the specified naming convention
+            chat_id = create_new_chat(organization_id, project_id)
 
         # Send the message and get the response
         response_content = ""
@@ -110,7 +124,7 @@ def chat_completions():
             'id': f"chatcmpl-{chat_id}",
             'object': 'chat.completion',
             'created': int(datetime.now().timestamp()),  # Use current timestamp
-            'model': 'claude-2',  # Assuming Claude 2 model
+            'model': model,  # Use the model specified in the request or the default
             'choices': [
                 {
                     'index': 0,
@@ -147,6 +161,12 @@ def chat_completions():
 @app.route('/v1/models', methods=['GET'])
 def list_models():
     models = [
+        {
+            "id": "claude-3.5-sonnet",
+            "object": "model",
+            "created": 1686935002,
+            "owned_by": "anthropic"
+        },
         {
             "id": "claude-2",
             "object": "model",
@@ -185,4 +205,26 @@ def login():
         return jsonify({'error': f'Login failed: {str(e)}'}), 401
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, threaded=True)
+    parser = argparse.ArgumentParser(description='Run Claude OpenAI API server')
+    parser.add_argument('--use-ssl', action='store_true', help='Use SSL for HTTPS connections')
+    args = parser.parse_args()
+
+    if args.use_ssl:
+        cert_file = 'cert.pem'
+        key_file = 'key.pem'
+        
+        if os.path.exists(cert_file) and os.path.exists(key_file):
+            # Create SSL context
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+            
+            # Run the app with SSL
+            print("Running in HTTPS mode.")
+            app.run(debug=True, port=5000, threaded=True, ssl_context=ssl_context)
+        else:
+            print("SSL certificate files not found. Please make sure cert.pem and key.pem are present.")
+            sys.exit(1)
+    else:
+        # Run the app without SSL
+        print("Running in HTTP mode.")
+        app.run(debug=True, port=5000, threaded=True)
