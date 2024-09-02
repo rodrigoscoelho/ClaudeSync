@@ -165,15 +165,15 @@ class FileConfigManager(BaseConfigManager):
         Args:
             provider (str): The name of the provider.
             session_key (str): The session key to set.
-            expiry (datetime): The expiry datetime for the session key.
+            expiry (datetime or None): The expiry datetime for the session key, or None if there's no expiry.
         """
         self.global_config_dir.mkdir(parents=True, exist_ok=True)
         provider_key_file = self.global_config_dir / f"{provider}.key"
+        data = {"session_key": session_key}
+        if expiry is not None:
+            data["session_key_expiry"] = expiry.isoformat()
         with open(provider_key_file, "w") as f:
-            json.dump(
-                {"session_key": session_key, "session_key_expiry": expiry.isoformat()},
-                f,
-            )
+            json.dump(data, f)
 
     def get_session_key(self, providerName):
         """
@@ -195,12 +195,15 @@ class FileConfigManager(BaseConfigManager):
         session_key = data.get("session_key")
         expiry_str = data.get("session_key_expiry")
 
-        if not session_key or not expiry_str:
+        if not session_key:
             return None, None
 
-        expiry = datetime.fromisoformat(expiry_str)
-        if datetime.now() > expiry:
-            return None, None
+        if expiry_str:
+            expiry = datetime.fromisoformat(expiry_str)
+            if datetime.now() > expiry:
+                return None, None
+        else:
+            expiry = None
 
         return session_key, expiry
 
@@ -285,6 +288,6 @@ class FileConfigManager(BaseConfigManager):
         for file in self.global_config_dir.glob("*.key"):
             provider = file.stem
             session_key, expiry = self.get_session_key(provider)
-            if session_key and expiry > datetime.now():
+            if session_key and (expiry is None or expiry > datetime.now()):
                 providers.append(provider)
         return providers

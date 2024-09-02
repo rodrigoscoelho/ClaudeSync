@@ -5,7 +5,7 @@ import sys
 import json
 import logging
 import argparse
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for
 from flask_cors import CORS
 from werkzeug.exceptions import BadRequest, UnsupportedMediaType
 from datetime import datetime
@@ -30,12 +30,15 @@ logger = logging.getLogger(__name__)
 # Add a file handler to log to a file
 file_handler = logging.FileHandler('claude_openai_api.log')
 file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # Initialize the ConfigManager and ClaudeAIProvider
 config = FileConfigManager()
 try:
     claude_provider = ClaudeAIProvider(config)
+    logger.info("ClaudeAIProvider initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize ClaudeAIProvider: {str(e)}")
     claude_provider = None
@@ -46,10 +49,32 @@ def create_new_chat(organization_id, project_id):
     logger.info(f"Created new chat with ID: {chat['uuid']} and name: {chat_name}")
     return chat['uuid']
 
+@app.route('/', methods=['GET'])
+def index():
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Claude.ai API</title>
+        </head>
+        <body>
+            <h1>Claude.ai API</h1>
+            <a href="/login">Login to Claude.ai</a><br>
+            <a href="/check_login">Check Login Status</a><br>
+            <h2>ClaudeSync Options</h2>
+            <button onclick="location.href='/list_chats'">List Chats</button>
+            <button onclick="location.href='/list_projects'">List Projects</button>
+            <button onclick="location.href='/list_organizations'">List Organizations</button>
+            <h2>Test API</h2>
+            <button onclick="location.href='/test_api'">Test API</button>
+        </body>
+        </html>
+    ''')
+
 @app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
 def chat_completions():
     logger.info(f"Received request: {request.method} {request.url}")
-    logger.info(f"Request headers: {request.headers}")
+    logger.info(f"Request headers: {json.dumps(dict(request.headers), indent=2)}")
     
     if request.method == 'OPTIONS':
         return '', 204
@@ -69,7 +94,7 @@ def chat_completions():
             logger.error("Invalid JSON data")
             raise BadRequest("Invalid JSON data")
         
-        logger.info(f"Received request data: {data}")
+        logger.info(f"Received request data: {json.dumps(data, indent=2)}")
 
         # Extract relevant information from the OpenAI-style request
         messages = data.get('messages', [])
@@ -88,7 +113,7 @@ def chat_completions():
             elif role == 'assistant':
                 claude_messages.append({'role': 'Assistant', 'content': content})
 
-        logger.debug(f"Converted messages: {claude_messages}")
+        logger.debug(f"Converted messages: {json.dumps(claude_messages, indent=2)}")
 
         # Prepare the prompt for Claude.ai
         prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in claude_messages])
@@ -110,9 +135,15 @@ def chat_completions():
             # Create a new chat with the specified naming convention
             chat_id = create_new_chat(organization_id, project_id)
 
+        logger.info(f"Sending request to Claude.ai API:")
+        logger.info(f"Organization ID: {organization_id}")
+        logger.info(f"Chat ID: {chat_id}")
+        logger.info(f"Prompt: {prompt}")
+
         # Send the message and get the response
         response_content = ""
         for event in claude_provider.send_message(organization_id, chat_id, prompt):
+            logger.debug(f"Received event from Claude.ai: {json.dumps(event, indent=2)}")
             if "completion" in event:
                 response_content += event["completion"]
             elif "content" in event:
@@ -120,6 +151,8 @@ def chat_completions():
             elif "error" in event:
                 logger.error(f"Error in Claude.ai response: {event['error']}")
                 raise ProviderError(f"Error in Claude.ai response: {event['error']}")
+
+        logger.info(f"Full response from Claude.ai: {response_content}")
 
         # Convert Claude.ai response to OpenAI-style response
         openai_response = {
@@ -144,7 +177,7 @@ def chat_completions():
             }
         }
 
-        logger.info(f"Returning OpenAI-style response: {openai_response}")
+        logger.info(f"Returning OpenAI-style response: {json.dumps(openai_response, indent=2)}")
         return jsonify(openai_response)
 
     except ProviderError as e:
@@ -181,30 +214,134 @@ def list_models():
 @app.before_request
 def check_auth():
     logger.info(f"Received request: {request.method} {request.url}")
-    logger.info(f"Request headers: {request.headers}")
+    logger.info(f"Request headers: {json.dumps(dict(request.headers), indent=2)}")
     
     if request.method == 'OPTIONS':
         return '', 204
     
-    if request.endpoint not in ['login', 'config']:
+    if request.endpoint not in ['login', 'config', 'index', 'check_login']:
         session_key, _ = config.get_session_key("claude.ai")
+        logger.debug(f"Retrieved session key: {'[REDACTED]' if session_key else 'None'}")
         if not session_key:
             logger.error("Not authenticated")
             return jsonify({'error': 'Not authenticated. Please log in first.'}), 401
 
-@app.route('/login', methods=['POST', 'OPTIONS'])
+@app.route('/login', methods=['GET', 'POST', 'OPTIONS'])
 def login():
     if request.method == 'OPTIONS':
         return '', 204
     
+    if request.method == 'GET':
+        return render_template_string('''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Login to Claude.ai</title>
+            </head>
+            <body>
+                <h1>Login to Claude.ai</h1>
+                <form method="POST">
+                    <label for="session_key">Enter your Claude.ai session key:</label><br>
+                    <input type="text" id="session_key" name="session_key" required><br><br>
+                    <input type="submit" value="Login">
+                </form>
+            </body>
+            </html>
+        ''')
+    
+    if request.method == 'POST':
+        session_key = request.form.get('session_key')
+        if not session_key:
+            return jsonify({'error': 'No session key provided'}), 400
+
+        try:
+            logger.info("Attempting to log in to Claude.ai with provided session key")
+            config.set_session_key("claude.ai", session_key, None)  # Set expiry to None as it's a manual entry
+            
+            # Verify the login by trying to get the active organization
+            try:
+                organization_id = config.get("active_organization_id")
+                if organization_id:
+                    logger.info(f"Successfully logged in and retrieved active organization ID: {organization_id}")
+                    return jsonify({'message': 'Successfully logged in to Claude.ai', 'organization_id': organization_id}), 200
+                else:
+                    logger.error("Failed to retrieve active organization ID after login")
+                    return jsonify({'error': 'Login failed: Unable to retrieve active organization ID'}), 401
+            except Exception as e:
+                logger.error(f"Failed to retrieve active organization ID after login: {str(e)}")
+                return jsonify({'error': 'Login failed: Unable to retrieve active organization ID'}), 401
+        except Exception as e:
+            logger.error(f"Unexpected error during login: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Unexpected error during login: {str(e)}'}), 500
+
+@app.route('/check_login', methods=['GET'])
+def check_login():
+    session_key, _ = config.get_session_key("claude.ai")
+    if not session_key:
+        return jsonify({'status': 'Not logged in'}), 401
+    
     try:
-        session_key, expiry = claude_provider.login()
-        config.set_session_key("claude.ai", session_key, expiry)
-        logger.info("Successfully logged in to Claude.ai")
-        return jsonify({'message': 'Successfully logged in to Claude.ai'}), 200
+        organization_id = config.get("active_organization_id")
+        if organization_id:
+            return jsonify({'status': 'Logged in', 'organization_id': organization_id}), 200
+        else:
+            return jsonify({'status': 'Error', 'message': 'No active organization set'}), 500
+    except Exception as e:
+        logger.error(f"Error checking login status: {str(e)}")
+        return jsonify({'status': 'Error', 'message': str(e)}), 500
+
+@app.route('/list_chats', methods=['GET'])
+def list_chats():
+    try:
+        organization_id = config.get("active_organization_id")
+        if not organization_id:
+            return jsonify({'error': 'No active organization set'}), 400
+
+        chats = claude_provider.get_chat_conversations(organization_id)
+        
+        if not chats:
+            logger.info("No chats found. Creating a new chat.")
+            new_chat_id = create_new_chat(organization_id, None)
+            chats = claude_provider.get_chat_conversations(organization_id)
+        
+        return jsonify(chats), 200
+    except Exception as e:
+        logger.error(f"Error listing chats: {str(e)}")
+        return jsonify({'error': f'Error listing chats: {str(e)}'}), 500
+
+@app.route('/list_projects', methods=['GET'])
+def list_projects():
+    try:
+        logger.info("Attempting to list projects")
+        session_key, _ = config.get_session_key("claude.ai")
+        if not session_key:
+            logger.error("Not authenticated")
+            return jsonify({'error': 'Not authenticated. Please log in first.'}), 401
+        
+        logger.info("Using session key to list projects")
+        projects = claude_provider.get_projects()
+        
+        if not projects:
+            logger.info("No projects found.")
+            return jsonify([]), 200
+        
+        logger.info(f"Successfully retrieved projects: {json.dumps(projects, indent=2)}")
+        return jsonify(projects), 200
     except ProviderError as e:
-        logger.error(f"Login failed: {str(e)}")
-        return jsonify({'error': f'Login failed: {str(e)}'}), 401
+        logger.error(f"ProviderError occurred while listing projects: {str(e)}")
+        return jsonify({'error': f'Error listing projects: {str(e)}'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error occurred while listing projects: {str(e)}", exc_info=True)
+        return jsonify({'error': f'Unexpected error listing projects: {str(e)}'}), 500
+
+@app.route('/list_organizations', methods=['GET'])
+def list_organizations():
+    try:
+        organizations = claude_provider.get_organizations()
+        return jsonify(organizations), 200
+    except Exception as e:
+        logger.error(f"Error listing organizations: {str(e)}")
+        return jsonify({'error': f'Error listing organizations: {str(e)}'}), 500
 
 @app.route('/config', methods=['GET', 'POST'])
 def config_page():
@@ -235,6 +372,75 @@ def config_page():
         </html>
     ''')
 
+@app.route('/test_api', methods=['GET', 'POST'])
+def test_api():
+    if request.method == 'GET':
+        return render_template_string('''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Test Claude.ai API</title>
+            </head>
+            <body>
+                <h1>Test Claude.ai API</h1>
+                <form method="POST">
+                    <input type="submit" value="Test API">
+                </form>
+            </body>
+            </html>
+        ''')
+    
+    if request.method == 'POST':
+        try:
+            logger.info("Starting API test")
+            organization_id = config.get("active_organization_id")
+            if not organization_id:
+                logger.error("No active organization set")
+                return jsonify({'error': 'No active organization set'}), 400
+
+            logger.info(f"Using organization ID: {organization_id}")
+            
+            # Check if there are any existing projects
+            projects = claude_provider.get_projects()
+            if not projects:
+                logger.info("No projects found. Creating a new project.")
+                new_project = claude_provider.create_project("Test Project", "Created for API test")
+                projects = claude_provider.get_projects()
+            
+            project_id = projects[0]['id']
+            logger.info(f"Using project ID: {project_id}")
+            
+            prompt = "Rodrigo é o maior, Rodrigo Coelho é demais, quem é o maioral?"
+            logger.info(f"Creating new chat with prompt: {prompt}")
+            
+            try:
+                chat_id = create_new_chat(organization_id, project_id)
+                logger.info(f"Created new chat with ID: {chat_id}")
+            except Exception as e:
+                logger.error(f"Error creating new chat: {str(e)}")
+                return jsonify({'error': f'Error creating new chat: {str(e)}'}), 500
+            
+            logger.info("Sending message to Claude.ai")
+            response_content = ""
+            try:
+                for event in claude_provider.send_message(organization_id, chat_id, prompt):
+                    logger.debug(f"Received event: {json.dumps(event, indent=2)}")
+                    if "completion" in event:
+                        response_content += event["completion"]
+                    elif "content" in event:
+                        response_content += event["content"]
+                    elif "error" in event:
+                        raise ProviderError(f"Error in Claude.ai response: {event['error']}")
+            except Exception as e:
+                logger.error(f"Error sending message to Claude.ai: {str(e)}")
+                return jsonify({'error': f'Error sending message to Claude.ai: {str(e)}'}), 500
+
+            logger.info(f"Received response from Claude.ai: {response_content}")
+            return jsonify({'response': response_content}), 200
+        except Exception as e:
+            logger.error(f"Unexpected error during API test: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Unexpected error during API test: {str(e)}'}), 500
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run Claude OpenAI API server')
     parser.add_argument('--use-ssl', action='store_true', help='Use SSL for HTTPS connections')
@@ -251,11 +457,11 @@ if __name__ == '__main__':
             
             # Run the app with SSL
             print("Running in HTTPS mode.")
-            app.run(debug=True, host='0.0.0.0', port=5000, threaded=True, ssl_context=ssl_context)
+            app.run(debug=True, host='0.0.0.0', port=5001, threaded=True, ssl_context=ssl_context)
         else:
             print("SSL certificate files not found. Please make sure cert.pem and key.pem are present.")
             sys.exit(1)
     else:
         # Run the app without SSL
         print("Running in HTTP mode.")
-        app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
+        app.run(debug=True, host='0.0.0.0', port=5001, threaded=True)
