@@ -1,5 +1,7 @@
 from flask import request, jsonify, render_template_string
 from config_logging import logger, config, claude_provider
+from datetime import datetime, timedelta
+import os
 
 def register_auth_routes(app):
     @app.before_request
@@ -65,24 +67,40 @@ def register_auth_routes(app):
         if request.method == 'POST':
             session_key = request.form.get('session_key')
             if not session_key:
+                logger.error("No session key provided in login attempt")
                 return jsonify({'error': 'No session key provided'}), 400
 
             try:
                 logger.info("Attempting to log in to Claude.ai with provided session key")
-                config.set_session_key("claude.ai", session_key, None)  # Set expiry to None as it's a manual entry
+                expiry = datetime.now() + timedelta(hours=24)  # Set expiry to 24 hours from now
+                config.set_session_key("claude.ai", session_key, expiry)
                 
-                # Verify the login by trying to get the active organization
+                # Verify that the session key was saved correctly
+                key_file_path = os.path.join(config.global_config_dir, "claude.ai.key")
+                if not os.path.exists(key_file_path):
+                    logger.error(f"Session key file not created at {key_file_path}")
+                    return jsonify({'error': 'Failed to save session key'}), 500
+
+                # Verify the login by trying to get organizations
                 try:
-                    organization_id = config.get("active_organization_id")
-                    if organization_id:
-                        logger.info(f"Successfully logged in and retrieved active organization ID: {organization_id}")
-                        return jsonify({'message': 'Successfully logged in to Claude.ai', 'organization_id': organization_id}), 200
+                    organizations = claude_provider.get_organizations()
+                    if organizations:
+                        logger.info(f"Successfully logged in and retrieved {len(organizations)} organizations")
+                        # Set the first organization as the active one
+                        active_org = organizations[0]
+                        config.set("active_organization_id", active_org['id'])
+                        logger.info(f"Set active organization: {active_org['name']} (ID: {active_org['id']})")
+                        return jsonify({
+                            'message': 'Successfully logged in to Claude.ai',
+                            'organizations_count': len(organizations),
+                            'active_organization': active_org['name']
+                        }), 200
                     else:
-                        logger.error("Failed to retrieve active organization ID after login")
-                        return jsonify({'error': 'Login failed: Unable to retrieve active organization ID'}), 401
+                        logger.error("Failed to retrieve organizations after login")
+                        return jsonify({'error': 'Login failed: Unable to retrieve organizations'}), 401
                 except Exception as e:
-                    logger.error(f"Failed to retrieve active organization ID after login: {str(e)}")
-                    return jsonify({'error': 'Login failed: Unable to retrieve active organization ID'}), 401
+                    logger.error(f"Failed to verify login: {str(e)}")
+                    return jsonify({'error': f'Login failed: {str(e)}'}), 401
             except Exception as e:
                 logger.error(f"Unexpected error during login: {str(e)}", exc_info=True)
                 return jsonify({'error': f'Unexpected error during login: {str(e)}'}), 500
@@ -91,16 +109,35 @@ def register_auth_routes(app):
     def check_login():
         session_key, _ = config.get_session_key("claude.ai")
         if not session_key:
+            logger.error("No session key found during login check")
             return jsonify({'status': 'Not logged in'}), 401
         
         try:
-            organization_id = config.get("active_organization_id")
-            if organization_id:
-                return jsonify({'status': 'Logged in', 'organization_id': organization_id}), 200
+            organizations = claude_provider.get_organizations()
+            if organizations:
+                logger.info(f"Login check successful. Retrieved {len(organizations)} organizations")
+                active_org_id = config.get("active_organization_id")
+                if not active_org_id:
+                    # Set the first organization as the active one if not set
+                    active_org = organizations[0]
+                    config.set("active_organization_id", active_org['id'])
+                    logger.info(f"Set active organization: {active_org['name']} (ID: {active_org['id']})")
+                else:
+                    active_org = next((org for org in organizations if org['id'] == active_org_id), None)
+                    if not active_org:
+                        logger.warning(f"Active organization with ID {active_org_id} not found. Setting first organization as active.")
+                        active_org = organizations[0]
+                        config.set("active_organization_id", active_org['id'])
+                return jsonify({
+                    'status': 'Logged in',
+                    'organizations_count': len(organizations),
+                    'active_organization': active_org['name']
+                }), 200
             else:
-                return jsonify({'status': 'Error', 'message': 'No active organization set'}), 500
+                logger.error("Failed to retrieve organizations during login check")
+                return jsonify({'status': 'Error', 'message': 'Unable to verify login status'}), 500
         except Exception as e:
-            logger.error(f"Error checking login status: {str(e)}")
+            logger.error(f"Error checking login status: {str(e)}", exc_info=True)
             return jsonify({'status': 'Error', 'message': str(e)}), 500
 
     @app.route('/config', methods=['GET', 'POST'])
@@ -108,7 +145,8 @@ def register_auth_routes(app):
         if request.method == 'POST':
             new_cookie = request.form.get('cookie')
             if new_cookie:
-                config.set_session_key("claude.ai", new_cookie, None)  # Set expiry to None as it's a manual entry
+                expiry = datetime.now() + timedelta(hours=24)  # Set expiry to 24 hours from now
+                config.set_session_key("claude.ai", new_cookie, expiry)
                 logger.info("Successfully updated Claude.ai cookie")
                 return jsonify({'message': 'Cookie updated successfully'}), 200
             else:

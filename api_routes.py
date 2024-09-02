@@ -6,6 +6,18 @@ from claudesync.exceptions import ProviderError
 from config_logging import logger, config, claude_provider
 from utils import create_new_chat
 
+def create_default_project(organization_id):
+    """Creates a default project if no projects exist."""
+    try:
+        project_name = "Default ClaudeSync Project"
+        project_description = "Default project created automatically by ClaudeSync"
+        new_project = claude_provider.create_project(organization_id, project_name, project_description)
+        logger.info(f"Created default project: {json.dumps(new_project, indent=2)}")
+        return [new_project]
+    except Exception as e:
+        logger.error(f"Error creating default project: {str(e)}")
+        raise
+
 def register_api_routes(app):
     @app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
     def chat_completions():
@@ -199,15 +211,16 @@ def register_api_routes(app):
                 projects = claude_provider.get_projects(organization_id)
                 
                 if not projects:
-                    logger.info("No projects found.")
-                    return jsonify([]), 200
+                    logger.info("No projects found. Creating a default project.")
+                    projects = create_default_project(organization_id)
                 
                 logger.info(f"Successfully retrieved projects: {json.dumps(projects, indent=2)}")
                 return jsonify(projects), 200
             except ProviderError as e:
                 if "404" in str(e):
-                    logger.warning(f"No projects found for organization {organization_id}. This might be normal if the organization is new or has no projects.")
-                    return jsonify([]), 200
+                    logger.warning(f"No projects found for organization {organization_id}. Creating a default project.")
+                    projects = create_default_project(organization_id)
+                    return jsonify(projects), 200
                 else:
                     raise
         except ProviderError as e:
@@ -259,13 +272,11 @@ def register_api_routes(app):
                     projects = claude_provider.get_projects(organization_id)
                     if not projects:
                         logger.info("No projects found. Creating a new project.")
-                        new_project = claude_provider.create_project(organization_id, "Test Project", "Created for API test")
-                        projects = claude_provider.get_projects(organization_id)
+                        projects = create_default_project(organization_id)
                 except ProviderError as e:
                     if "404" in str(e):
                         logger.info("No projects found. Creating a new project.")
-                        new_project = claude_provider.create_project(organization_id, "Test Project", "Created for API test")
-                        projects = claude_provider.get_projects(organization_id)
+                        projects = create_default_project(organization_id)
                     else:
                         raise
 
