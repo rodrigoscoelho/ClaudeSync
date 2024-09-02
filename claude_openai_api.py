@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
+
 import os
 import sys
 import json
 import logging
 import argparse
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from werkzeug.exceptions import BadRequest, UnsupportedMediaType
 from datetime import datetime
@@ -184,7 +186,7 @@ def check_auth():
     if request.method == 'OPTIONS':
         return '', 204
     
-    if request.endpoint != 'login':
+    if request.endpoint not in ['login', 'config']:
         session_key, _ = config.get_session_key("claude.ai")
         if not session_key:
             logger.error("Not authenticated")
@@ -204,6 +206,35 @@ def login():
         logger.error(f"Login failed: {str(e)}")
         return jsonify({'error': f'Login failed: {str(e)}'}), 401
 
+@app.route('/config', methods=['GET', 'POST'])
+def config_page():
+    if request.method == 'POST':
+        new_cookie = request.form.get('cookie')
+        if new_cookie:
+            config.set_session_key("claude.ai", new_cookie, None)  # Set expiry to None as it's a manual entry
+            logger.info("Successfully updated Claude.ai cookie")
+            return jsonify({'message': 'Cookie updated successfully'}), 200
+        else:
+            return jsonify({'error': 'No cookie provided'}), 400
+
+    # If it's a GET request, render the configuration page
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Claude.ai Configuration</title>
+        </head>
+        <body>
+            <h1>Claude.ai Configuration</h1>
+            <form method="POST">
+                <label for="cookie">Enter new Claude.ai cookie:</label><br>
+                <input type="text" id="cookie" name="cookie" size="50"><br>
+                <input type="submit" value="Update Cookie">
+            </form>
+        </body>
+        </html>
+    ''')
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run Claude OpenAI API server')
     parser.add_argument('--use-ssl', action='store_true', help='Use SSL for HTTPS connections')
@@ -220,11 +251,11 @@ if __name__ == '__main__':
             
             # Run the app with SSL
             print("Running in HTTPS mode.")
-            app.run(debug=True, port=5000, threaded=True, ssl_context=ssl_context)
+            app.run(debug=True, host='0.0.0.0', port=5000, threaded=True, ssl_context=ssl_context)
         else:
             print("SSL certificate files not found. Please make sure cert.pem and key.pem are present.")
             sys.exit(1)
     else:
         # Run the app without SSL
         print("Running in HTTP mode.")
-        app.run(debug=True, port=5000, threaded=True)
+        app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
