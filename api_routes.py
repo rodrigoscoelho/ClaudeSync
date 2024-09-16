@@ -1,10 +1,12 @@
 import json
+import re
 from flask import request, jsonify, render_template_string
 from werkzeug.exceptions import BadRequest, UnsupportedMediaType
 from datetime import datetime
 from claudesync.exceptions import ProviderError
 from config_logging import logger, config, claude_provider
 from utils import create_new_chat
+
 
 def create_default_project(organization_id):
     """Creates a default project if no projects exist."""
@@ -17,6 +19,54 @@ def create_default_project(organization_id):
     except Exception as e:
         logger.error(f"Error creating default project: {str(e)}")
         raise
+
+def generate_functions_prompt(tools):
+    functions_description = "You have access to the following functions:\n\n"
+    for tool in tools:
+        name = tool.get('name')
+        description = tool.get('description')
+        input_schema = tool.get('input_schema', {})
+        parameters = input_schema.get('properties', {})
+        required_params = input_schema.get('required', [])
+        
+        functions_description += f"Function Name: {name}\nDescription: {description}\nParameters:\n"
+        for param_name, param_info in parameters.items():
+            param_desc = param_info.get('description', '')
+            param_type = param_info.get('type', 'string')
+            is_required = param_name in required_params
+            functions_description += f" - {param_name} ({param_type}{', required' if is_required else ''}): {param_desc}\n"
+        functions_description += "\n"
+    functions_description += (
+        "When you need to call a function, please output the function call in the following format, starting and ending with triple backticks and 'function':\n"
+        "```function\n"
+        "{\n"
+        "  \"name\": \"<function_name>\",\n"
+        "  \"arguments\": <arguments in JSON format>\n"
+        "}\n"
+        "```\n"
+        "Please do not include any other text inside the function call block.\n"
+        "After the function call block, please continue with any additional information or answers you may have.\n"
+    )
+    return functions_description
+def parse_claude_response(response_text):
+    # Use regex to find the function call block
+    pattern = r'```function\n(.*?)\n```'
+    match = re.search(pattern, response_text, re.DOTALL)
+    if match:
+        function_call_text = match.group(1)
+        try:
+            function_call_data = json.loads(function_call_text)
+            function_name = function_call_data.get('name')
+            arguments = function_call_data.get('arguments', {})
+            return function_name, arguments
+        except json.JSONDecodeError:
+            return None, None
+    else:
+        return None, None
+
+def remove_function_call_block(response_text):
+    pattern = r'```function\n(.*?)\n```'
+    return re.sub(pattern, '', response_text, flags=re.DOTALL).strip()
 
 def register_api_routes(app):
     @app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
@@ -44,18 +94,27 @@ def register_api_routes(app):
             
             logger.info(f"Received request data: {json.dumps(data, indent=2)}")
 
-            # Extract relevant information from the OpenAI-style request
+            # Extract tools and other relevant information
+            tools = data.get('tools', [])
             messages = data.get('messages', [])
             max_tokens = data.get('max_tokens', 1000)  # Default to 1000 if not specified
             model = data.get('model', 'claude-3.5-sonnet')  # Default to claude-3.5-sonnet if not specified
 
+            # Generate functions prompt
+            functions_prompt = generate_functions_prompt(tools)
+
             # Convert OpenAI-style messages to Claude.ai format
             claude_messages = []
+
+            # Include functions prompt as a system message
+            if functions_prompt:
+                claude_messages.append({'role': 'System', 'content': functions_prompt})
+
             for message in messages:
                 role = message['role']
                 content = message['content']
                 if role == 'system':
-                    claude_messages.append({'role': 'Human', 'content': f"System: {content}"})
+                    claude_messages.append({'role': 'System', 'content': content})
                 elif role == 'user':
                     claude_messages.append({'role': 'Human', 'content': content})
                 elif role == 'assistant':
@@ -64,7 +123,16 @@ def register_api_routes(app):
             logger.debug(f"Converted messages: {json.dumps(claude_messages, indent=2)}")
 
             # Prepare the prompt for Claude.ai
-            prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in claude_messages])
+            prompt = ""
+            for msg in claude_messages:
+                role = msg['role']
+                content = msg['content']
+                if role == 'System':
+                    prompt += f"System: {content}\n\n"
+                elif role == 'Human':
+                    prompt += f"Human: {content}\n\n"
+                elif role == 'Assistant':
+                    prompt += f"Assistant: {content}\n\n"
 
             # Get the active organization and project
             organization_id = config.get("active_organization_id")
@@ -89,41 +157,66 @@ def register_api_routes(app):
             logger.info(f"Prompt: {prompt}")
 
             # Send the message and get the response
-            response_content = ""
-            for event in claude_provider.send_message(organization_id, chat_id, prompt):
-                logger.debug(f"Received event from Claude.ai: {json.dumps(event, indent=2)}")
-                if "completion" in event:
-                    response_content += event["completion"]
-                elif "content" in event:
-                    response_content += event["content"]
-                elif "error" in event:
-                    logger.error(f"Error in Claude.ai response: {event['error']}")
-                    raise ProviderError(f"Error in Claude.ai response: {event['error']}")
+            response_content = claude_provider.send_message(organization_id, chat_id, prompt)
 
             logger.info(f"Full response from Claude.ai: {response_content}")
 
-            # Convert Claude.ai response to OpenAI-style response
-            openai_response = {
-                'id': f"chatcmpl-{chat_id}",
-                'object': 'chat.completion',
-                'created': int(datetime.now().timestamp()),  # Use current timestamp
-                'model': model,  # Use the model specified in the request or the default
-                'choices': [
-                    {
-                        'index': 0,
-                        'message': {
-                            'role': 'assistant',
-                            'content': response_content,
-                        },
-                        'finish_reason': 'stop',
+            # Parse Claude's response for function calls
+            function_name, arguments = parse_claude_response(response_content)
+
+            if function_name:
+                # Remove the function call block from the assistant's content
+                assistant_content = remove_function_call_block(response_content)
+                
+                # Construct the OpenAI-style response with function_call
+                openai_response = {
+                    'id': f"chatcmpl-{chat_id}",
+                    'object': 'chat.completion',
+                    'created': int(datetime.now().timestamp()),  # Use current timestamp
+                    'model': model,  # Use the model specified in the request or the default
+                    'choices': [
+                        {
+                            'index': 0,
+                            'message': {
+                                'role': 'assistant',
+                                'content': assistant_content,
+                                'function_call': {
+                                    'name': function_name,
+                                    'arguments': json.dumps(arguments)
+                                }
+                            },
+                            'finish_reason': 'stop',
+                        }
+                    ],
+                    'usage': {
+                        'prompt_tokens': -1,  # Claude.ai doesn't provide this information
+                        'completion_tokens': -1,  # Claude.ai doesn't provide this information
+                        'total_tokens': -1,  # Claude.ai doesn't provide this information
                     }
-                ],
-                'usage': {
-                    'prompt_tokens': -1,  # Claude.ai doesn't provide this information
-                    'completion_tokens': -1,  # Claude.ai doesn't provide this information
-                    'total_tokens': -1,  # Claude.ai doesn't provide this information
                 }
-            }
+            else:
+                # Construct the OpenAI-style response without function_call
+                openai_response = {
+                    'id': f"chatcmpl-{chat_id}",
+                    'object': 'chat.completion',
+                    'created': int(datetime.now().timestamp()),  # Use current timestamp
+                    'model': model,  # Use the model specified in the request or the default
+                    'choices': [
+                        {
+                            'index': 0,
+                            'message': {
+                                'role': 'assistant',
+                                'content': response_content,
+                            },
+                            'finish_reason': 'stop',
+                        }
+                    ],
+                    'usage': {
+                        'prompt_tokens': -1,  # Claude.ai doesn't provide this information
+                        'completion_tokens': -1,  # Claude.ai doesn't provide this information
+                        'total_tokens': -1,  # Claude.ai doesn't provide this information
+                    }
+                }
 
             logger.info(f"Returning OpenAI-style response: {json.dumps(openai_response, indent=2)}")
             return jsonify(openai_response)

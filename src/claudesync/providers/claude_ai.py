@@ -4,21 +4,29 @@ import urllib.parse
 import json
 import gzip
 from datetime import datetime, timezone
-from .base_claude_ai import BaseClaudeAIProvider
-from ..exceptions import ProviderError
 
+from claudesync.providers.base_claude_ai import BaseClaudeAIProvider
+from claudesync.exceptions import ProviderError
+from claudesync.configmanager.inmemory_config_manager import InMemoryConfigManager
 
 class ClaudeAIProvider(BaseClaudeAIProvider):
     def __init__(self, config=None):
+        if config is None:
+            config = InMemoryConfigManager()
+        config.set("claude_api_url", "https://api.claude.ai/api")
         super().__init__(config)
+        # No need to set self.base_url directly
 
-    def _make_request(self, method, endpoint, data=None):
+    def _make_request(self, method, endpoint, data=None, headers=None):
         url = f"{self.base_url}{endpoint}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
+        default_headers = {
+            "User-Agent": "Mozilla/5.0",
             "Content-Type": "application/json",
             "Accept-Encoding": "gzip",
         }
+
+        if headers:
+            default_headers.update(headers)
 
         session_key, expiry = self.config.get_session_key("claude.ai")
         cookies = {
@@ -27,14 +35,14 @@ class ClaudeAIProvider(BaseClaudeAIProvider):
 
         try:
             self.logger.debug(f"Making {method} request to {url}")
-            self.logger.debug(f"Headers: {headers}")
+            self.logger.debug(f"Headers: {default_headers}")
             self.logger.debug(f"Cookies: {cookies}")
             if data:
                 self.logger.debug(f"Request data: {data}")
 
             # Prepare the request
             req = urllib.request.Request(url, method=method)
-            for key, value in headers.items():
+            for key, value in default_headers.items():
                 req.add_header(key, value)
 
             # Add cookies
@@ -120,7 +128,7 @@ class ClaudeAIProvider(BaseClaudeAIProvider):
         url = f"{self.base_url}{endpoint}"
         session_key, _ = self.config.get_session_key("claude.ai")
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
+            "User-Agent": "Mozilla/5.0",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "Cookie": f"sessionKey={session_key}",
@@ -136,3 +144,23 @@ class ClaudeAIProvider(BaseClaudeAIProvider):
             self.handle_http_error(e)
         except urllib.error.URLError as e:
             raise ProviderError(f"API request failed: {str(e)}")
+
+    def send_message(self, organization_id, chat_id, prompt, timezone="UTC"):
+        data = {
+            "completion": {
+                "model": "claude-2",
+                "prompt": prompt,
+                "timezone": timezone,
+            },
+            "conversation_uuid": chat_id,
+            "organization_uuid": organization_id,
+        }
+        endpoint = "/api/append_message"
+
+        response = self._make_request("POST", endpoint, data=data)
+
+        if response.get("error"):
+            raise ProviderError(f"Error from Claude.ai: {response['error']}")
+
+        # The response may contain 'completion' with the assistant's reply
+        return response.get("completion", "")

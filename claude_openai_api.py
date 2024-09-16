@@ -12,7 +12,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(current_dir, 'src')
 sys.path.append(src_dir)
 
-from config_logging import logger, config, claude_provider
+from config_logging import logger, config, initialize_claude_provider
 from api_routes import register_api_routes
 from auth_routes import register_auth_routes
 
