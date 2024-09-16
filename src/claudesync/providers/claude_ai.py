@@ -3,6 +3,7 @@ import urllib.error
 import urllib.parse
 import json
 import gzip
+import sseclient
 from datetime import datetime, timezone
 
 from claudesync.providers.base_claude_ai import BaseClaudeAIProvider
@@ -145,22 +146,3 @@ class ClaudeAIProvider(BaseClaudeAIProvider):
         except urllib.error.URLError as e:
             raise ProviderError(f"API request failed: {str(e)}")
 
-    def send_message(self, organization_id, chat_id, prompt, timezone="UTC"):
-        data = {
-            "completion": {
-                "model": "claude-2",
-                "prompt": prompt,
-                "timezone": timezone,
-            },
-            "conversation_uuid": chat_id,
-            "organization_uuid": organization_id,
-        }
-        endpoint = "/api/append_message"
-
-        response = self._make_request("POST", endpoint, data=data)
-
-        if response.get("error"):
-            raise ProviderError(f"Error from Claude.ai: {response['error']}")
-
-        # The response may contain 'completion' with the assistant's reply
-        return response.get("completion", "")

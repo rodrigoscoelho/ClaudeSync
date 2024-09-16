@@ -21,33 +21,38 @@ def create_default_project(organization_id):
         raise
 
 def generate_functions_prompt(tools):
+    if not tools:
+        return ""
+
     functions_description = "You have access to the following functions:\n\n"
     for tool in tools:
-        name = tool.get('name')
-        description = tool.get('description')
-        input_schema = tool.get('input_schema', {})
-        parameters = input_schema.get('properties', {})
-        required_params = input_schema.get('required', [])
-        
-        functions_description += f"Function Name: {name}\nDescription: {description}\nParameters:\n"
-        for param_name, param_info in parameters.items():
-            param_desc = param_info.get('description', '')
-            param_type = param_info.get('type', 'string')
-            is_required = param_name in required_params
-            functions_description += f" - {param_name} ({param_type}{', required' if is_required else ''}): {param_desc}\n"
-        functions_description += "\n"
+        if tool['type'] == 'function':
+            function = tool['function']
+            name = function.get('name')
+            description = function.get('description')
+            parameters = function.get('parameters', {})
+            
+            functions_description += f"Function Name: {name}\nDescription: {description}\nParameters:\n"
+            for param_name, param_info in parameters.get('properties', {}).items():
+                param_desc = param_info.get('description', '')
+                param_type = param_info.get('type', 'string')
+                is_required = param_name in parameters.get('required', [])
+                functions_description += f" - {param_name} ({param_type}{', required' if is_required else ''}): {param_desc}\n"
+            functions_description += "\n"
+
     functions_description += (
         "When you need to call a function, please output the function call in the following format, starting and ending with triple backticks and 'function':\n"
         "```function\n"
         "{\n"
-        "  \"name\": \"<function_name>\",\n"
-        "  \"arguments\": <arguments in JSON format>\n"
+        '  "name": "<function_name>",\n'
+        '  "arguments": <arguments in JSON format>\n'
         "}\n"
         "```\n"
         "Please do not include any other text inside the function call block.\n"
         "After the function call block, please continue with any additional information or answers you may have.\n"
     )
     return functions_description
+
 def parse_claude_response(response_text):
     # Use regex to find the function call block
     pattern = r'```function\n(.*?)\n```'
@@ -156,8 +161,18 @@ def register_api_routes(app):
             logger.info(f"Chat ID: {chat_id}")
             logger.info(f"Prompt: {prompt}")
 
-            # Send the message and get the response
-            response_content = claude_provider.send_message(organization_id, chat_id, prompt)
+            # Envie a mensagem e obtenha a resposta
+            response_content = ""
+            for event in claude_provider.send_message(organization_id, chat_id, prompt):
+                if isinstance(event, dict):
+                    if "completion" in event:
+                        response_content += event["completion"]
+                    elif "content" in event:
+                        response_content += event["content"]
+                    elif "error" in event:
+                        raise ProviderError(f"Error in Claude.ai response: {event['error']}")
+                else:
+                    response_content += str(event)
 
             logger.info(f"Full response from Claude.ai: {response_content}")
 
