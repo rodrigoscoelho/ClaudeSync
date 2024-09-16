@@ -1,5 +1,5 @@
 from flask import request, jsonify, render_template_string
-from config_logging import logger, config, claude_provider
+from config_logging import logger, config, initialize_claude_provider, claude_provider
 from datetime import datetime, timedelta
 import os
 
@@ -74,12 +74,12 @@ def register_auth_routes(app):
                 logger.info("Attempting to log in to Claude.ai with provided session key")
                 expiry = datetime.now() + timedelta(hours=24)  # Set expiry to 24 hours from now
                 config.set_session_key("claude.ai", session_key, expiry)
-                
-                # Verify that the session key was saved correctly
-                key_file_path = os.path.join(config.global_config_dir, "claude.ai.key")
-                if not os.path.exists(key_file_path):
-                    logger.error(f"Session key file not created at {key_file_path}")
-                    return jsonify({'error': 'Failed to save session key'}), 500
+
+                # Re-initialize claude_provider with the new session key
+                initialize_claude_provider()
+                if claude_provider is None:
+                    logger.error("Failed to initialize ClaudeAIProvider after setting session key")
+                    return jsonify({'error': 'Failed to initialize ClaudeAIProvider'}), 500
 
                 # Verify the login by trying to get organizations
                 try:

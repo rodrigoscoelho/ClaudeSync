@@ -17,11 +17,20 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-# Initialize the ConfigManager and ClaudeAIProvider
+# Initialize the ConfigManager
 config = FileConfigManager()
-try:
-    claude_provider = ClaudeAIProvider(config)
-    logger.info("ClaudeAIProvider initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize ClaudeAIProvider: {str(e)}")
-    claude_provider = None
+
+# Initialize claude_provider
+claude_provider = None
+
+def initialize_claude_provider():
+    global claude_provider
+    try:
+        claude_provider = ClaudeAIProvider(config)
+        logger.info("ClaudeAIProvider initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize ClaudeAIProvider: {str(e)}")
+        claude_provider = None
+
+# Initially call initialize_claude_provider()
+initialize_claude_provider()
